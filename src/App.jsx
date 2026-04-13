@@ -193,7 +193,7 @@ const getMetricMaskVerticalRange = ({ sourceText, baselineY, metrics }) => {
 const computePairCounterform = ({
   scope,
   font,
-  sourceText,
+  pairText,
   leftGlyph,
   rightGlyph,
   leftX,
@@ -206,11 +206,11 @@ const computePairCounterform = ({
   const leftBounds = leftPath.getBoundingBox()
   const rightBounds = rightPath.getBoundingBox()
 
-  const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1)
-  const bboxRight = Math.max(leftBounds.x2, rightBounds.x2)
+  const bboxLeft = leftBounds.x1 + (leftBounds.x2 - leftBounds.x1) / 2
+  const bboxRight = rightBounds.x1 + (rightBounds.x2 - rightBounds.x1) / 2
   const metrics = getScaledFontMetrics(font, fontSize)
   const { topY: bboxTop, bottomY: bboxBottom } = getMetricMaskVerticalRange({
-    sourceText,
+    sourceText: pairText,
     baselineY,
     metrics,
   })
@@ -221,9 +221,10 @@ const computePairCounterform = ({
     return ''
   }
 
-  const trapRect = new scope.Path.Rectangle(
-    new scope.Rectangle(bboxLeft, bboxTop, bboxWidth, bboxHeight),
-  )
+  const trapRect = new scope.Path.Rectangle({
+    point: [bboxLeft, bboxTop],
+    size: [bboxWidth, bboxHeight],
+  })
 
   const leftShape = opentypePathToCompoundPath(scope, leftPath)
   const rightShape = opentypePathToCompoundPath(scope, rightPath)
@@ -768,7 +769,7 @@ function App() {
     const nextArchivePath = computePairCounterform({
       scope,
       font,
-      sourceText: visibleArchivePair,
+      pairText: visibleArchivePair,
       leftGlyph: left.glyph,
       rightGlyph: right.glyph,
       leftX: left.x,
@@ -925,7 +926,7 @@ function App() {
       const pathData = computePairCounterform({
         scope,
         font: nextFont,
-        sourceText: nextText,
+        pairText: `${item.char}${right.char}`,
         leftGlyph: item.glyph,
         rightGlyph: right.glyph,
         leftX: item.x,
@@ -986,7 +987,7 @@ function App() {
         const d = computePairCounterform({
           scope,
           font: nextFont,
-          sourceText: pair,
+          pairText: pair,
           leftGlyph,
           rightGlyph,
           leftX: 200,
