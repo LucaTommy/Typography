@@ -300,10 +300,11 @@
   color: #2f6fff;
 }
 
+
 .download-button {
-  border: 1px solid #111;
-  background: #111;
-  color: #f6f6f2;
+  border: 1px solid #2f6fff;
+  background: #2f6fff;
+  color: #fff;
   text-align: center;
   font-size: 12px;
   font-weight: 700;
@@ -316,9 +317,9 @@
 }
 
 .download-button:hover {
-  background: #f6f6f2;
-  color: #111;
-  border-color: #111;
+  background: #1741a6;
+  color: #fff;
+  border-color: #1741a6;
 }
 
 .download-button:active {

@@ -130,8 +130,70 @@ const layoutGlyphs = (
   return { glyphs: positioned, width: cursorX }
 }
 
+const getScaledFontMetrics = (font, fontSize) => {
+  const unitsPerEm = font?.unitsPerEm || 1000
+  const fontScale = fontSize / unitsPerEm
+  const os2 = font?.tables?.os2 || {}
+  const hhea = font?.tables?.hhea || {}
+
+  const ascenderUnits = Number.isFinite(font?.ascender)
+    ? font.ascender
+    : Number.isFinite(hhea.ascender)
+      ? hhea.ascender
+      : unitsPerEm * 0.8
+
+  const rawDescenderUnits = Number.isFinite(font?.descender)
+    ? font.descender
+    : Number.isFinite(hhea.descender)
+      ? hhea.descender
+      : -unitsPerEm * 0.2
+
+  const xHeightUnits = Number.isFinite(os2.sxHeight) && os2.sxHeight > 0
+    ? os2.sxHeight
+    : ascenderUnits * 0.5
+
+  const capHeightUnits = Number.isFinite(os2.sCapHeight) && os2.sCapHeight > 0
+    ? os2.sCapHeight
+    : ascenderUnits * 0.8
+
+  const scaledAscender = ascenderUnits * fontScale
+  const scaledDescenderRaw = rawDescenderUnits * fontScale
+  const scaledDescender = scaledDescenderRaw > 0 ? -scaledDescenderRaw : scaledDescenderRaw
+  const scaledXHeight = xHeightUnits * fontScale
+  const scaledCapHeight = capHeightUnits * fontScale
+
+  return {
+    ascender: scaledAscender,
+    descender: scaledDescender,
+    xHeight: scaledXHeight,
+    capHeight: scaledCapHeight,
+  }
+}
+
+const getMetricMaskVerticalRange = ({ sourceText, baselineY, metrics }) => {
+  const sample = sourceText || ''
+  const hasDescenders = /[gjpqy]/.test(sample)
+  const hasCapsOrNums = /[A-Z0-9]/.test(sample)
+  const hasAscenders = /[bdfhklt]/.test(sample)
+
+  const topY = hasCapsOrNums
+    ? baselineY - metrics.capHeight
+    : hasAscenders
+      ? baselineY - metrics.ascender
+      : baselineY - metrics.xHeight
+
+  const bottomY = hasDescenders ? baselineY - metrics.descender : baselineY
+
+  return {
+    topY,
+    bottomY: Math.max(bottomY, topY + 1),
+  }
+}
+
 const computePairCounterform = ({
   scope,
+  font,
+  sourceText,
   leftGlyph,
   rightGlyph,
   leftX,
@@ -145,9 +207,13 @@ const computePairCounterform = ({
   const rightBounds = rightPath.getBoundingBox()
 
   const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1)
-  const bboxTop = Math.min(leftBounds.y1, rightBounds.y1)
   const bboxRight = Math.max(leftBounds.x2, rightBounds.x2)
-  const bboxBottom = Math.max(leftBounds.y2, rightBounds.y2)
+  const metrics = getScaledFontMetrics(font, fontSize)
+  const { topY: bboxTop, bottomY: bboxBottom } = getMetricMaskVerticalRange({
+    sourceText,
+    baselineY,
+    metrics,
+  })
   const bboxWidth = bboxRight - bboxLeft
   const bboxHeight = bboxBottom - bboxTop
 
@@ -701,6 +767,8 @@ function App() {
     const right = archiveLayout.glyphs[1]
     const nextArchivePath = computePairCounterform({
       scope,
+      font,
+      sourceText: visibleArchivePair,
       leftGlyph: left.glyph,
       rightGlyph: right.glyph,
       leftX: left.x,
@@ -856,6 +924,8 @@ function App() {
       const right = localLayout.glyphs[index + 1]
       const pathData = computePairCounterform({
         scope,
+        font: nextFont,
+        sourceText: nextText,
         leftGlyph: item.glyph,
         rightGlyph: right.glyph,
         leftX: item.x,
@@ -915,6 +985,8 @@ function App() {
 
         const d = computePairCounterform({
           scope,
+          font: nextFont,
+          sourceText: pair,
           leftGlyph,
           rightGlyph,
           leftX: 200,
@@ -1124,7 +1196,7 @@ function App() {
     <main className="studio-shell">
       <header className="studio-header">
         <div className="header-brand">
-          <h1 className="studio-title">Spatial Volume Laboratory</h1>
+          <h1 className="studio-title">controforme</h1>
           <p className="studio-subtitle">in case of problems contact Leonardo Voltolini on Teams</p>
         </div>
         <div className="header-actions">
