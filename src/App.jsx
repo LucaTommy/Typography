@@ -288,6 +288,7 @@ function App() {
   const [systemPanelOpen, setSystemPanelOpen] = useState(false)
   const [canvasEmpty, setCanvasEmpty] = useState(false)
   const [showIntro, setShowIntro] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [clipToGap, setClipToGap] = useState(true)
   const [clipPadding, setClipPadding] = useState(0)
 
@@ -1278,6 +1279,14 @@ function App() {
         <div className="header-actions">
           <button
             type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen((value) => !value)}
+            aria-label="Toggle sidebar"
+          >
+            ☰ Controls
+          </button>
+          <button
+            type="button"
             className="burger-button"
             onClick={() => setSystemPanelOpen((value) => !value)}
             aria-label="Toggle system panel"
@@ -1342,7 +1351,12 @@ function App() {
       ) : null}
 
       <div className="studio-body">
-        <aside className="studio-sidebar">
+        <div
+          className={`sidebar-backdrop${sidebarOpen ? ' backdrop-visible' : ''}`}
+          onClick={() => setSidebarOpen(false)}
+          role="presentation"
+        />
+        <aside className={`studio-sidebar${sidebarOpen ? ' sidebar-open' : ''}`}>
           <section className="panel panel-soft">
             <h2>1 — Choose a Font</h2>
 

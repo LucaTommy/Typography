@@ -1,5 +1,5 @@
 .studio-shell {
-  min-height: 100svh;
+  height: 100svh;
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 0;
@@ -7,6 +7,7 @@
   box-sizing: border-box;
   background: #000;
   color: #fff;
+  overflow: hidden;
 }
 
 .studio-header {
@@ -49,6 +50,7 @@
   grid-template-columns: 280px 1fr;
   gap: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .studio-sidebar {
@@ -57,8 +59,10 @@
   display: grid;
   align-content: start;
   gap: 24px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   border-right: 1px solid rgba(255, 255, 255, 0.1);
+  min-height: 0;
 }
 
 .studio-title {
@@ -392,8 +396,7 @@
   place-items: center;
   overflow: hidden;
   width: 100%;
-  height: calc(100vh - 57px);
-  min-height: 520px;
+  min-height: 0;
 }
 
 .editor-canvas {
@@ -483,22 +486,83 @@
   transform: scale(0.98);
 }
 
+.sidebar-toggle {
+  display: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 @media (max-width: 1100px) {
+  .studio-shell {
+    height: 100svh;
+    overflow: hidden;
+  }
+
   .studio-body {
     grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+    position: relative;
+  }
+
+  .studio-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: min(320px, 85vw);
+    height: 100vh;
+    z-index: 40;
+    padding: 24px;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    border-right: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .studio-sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 39;
+  }
+
+  .sidebar-backdrop.backdrop-visible {
+    display: block;
+  }
+
+  .sidebar-toggle {
+    display: inline-flex;
   }
 
   .studio-header {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
   }
 
-  .cta-button {
-    align-self: stretch;
+  .header-actions {
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   .studio-workspace {
-    height: 60vh;
+    height: 100%;
+    min-height: 0;
   }
 
   .system-drawer {
@@ -510,10 +574,16 @@
   }
 }
 
-@media (max-width: 900px) {
-  .studio-workspace {
-    height: 55vh;
-    min-height: 380px;
+@media (max-width: 600px) {
+  .studio-header {
+    padding: 12px 16px;
+  }
+
+  .cta-button,
+  .download-button {
+    font-size: 10px;
+    padding: 10px 12px;
+    min-height: 36px;
   }
 
   .system-drawer {
