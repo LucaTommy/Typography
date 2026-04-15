@@ -9,6 +9,24 @@ const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 const CANVAS_WIDTH = 1100
 const CANVAS_HEIGHT = 460
 
+const PRELOADED_FONTS = [
+  { name: 'Inter', url: 'https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-400-normal.ttf' },
+  { name: 'Roboto', url: 'https://cdn.jsdelivr.net/fontsource/fonts/roboto@latest/latin-400-normal.ttf' },
+  { name: 'Open Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/open-sans@latest/latin-400-normal.ttf' },
+  { name: 'Montserrat', url: 'https://cdn.jsdelivr.net/fontsource/fonts/montserrat@latest/latin-400-normal.ttf' },
+  { name: 'Lato', url: 'https://cdn.jsdelivr.net/fontsource/fonts/lato@latest/latin-400-normal.ttf' },
+  { name: 'Poppins', url: 'https://cdn.jsdelivr.net/fontsource/fonts/poppins@latest/latin-400-normal.ttf' },
+  { name: 'DM Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/dm-sans@latest/latin-400-normal.ttf' },
+  { name: 'Work Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/work-sans@latest/latin-400-normal.ttf' },
+]
+
+const loadFontFromUrl = async (url) => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error('Failed to fetch font')
+  const buffer = await response.arrayBuffer()
+  return opentype.parse(buffer)
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
 const LOWERCASE_NO_EXT = new Set('acemnorsuvwxz'.split(''))
@@ -257,7 +275,9 @@ const computePairCounterform = ({
 
 function App() {
   const [font, setFont] = useState(null)
-  const [text, setText] = useState('28000')
+  const [fontName, setFontName] = useState('')
+  const [fontLoading, setFontLoading] = useState(false)
+  const [text, setText] = useState('Hamburg')
   const [fontSize, setFontSize] = useState(260)
   const [tracking, setTracking] = useState(0)
   const [manualKerning, setManualKerning] = useState(0)
@@ -811,7 +831,10 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyZ') {
+      const tag = document.activeElement?.tagName
+      const isInput = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
+
+      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyZ' && !isInput) {
         event.preventDefault()
         if (event.shiftKey) {
           handleRedo()
@@ -820,7 +843,7 @@ function App() {
         }
         return
       }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !isInput) {
         const scope = scopeRef.current
         const activeItem = activeItemRef.current
         if (scope && activeItem && !activeItem.removed) {
@@ -1049,6 +1072,7 @@ function App() {
       return
     }
 
+    setFontLoading(true)
     try {
       const buffer = await file.arrayBuffer()
       const loadedFont = opentype.parse(buffer)
@@ -1061,6 +1085,7 @@ function App() {
       setExtractedCounterforms([])
 
       setFont(loadedFont)
+      setFontName(file.name.replace(/\.(otf|ttf)$/i, ''))
       setError('')
       setExtracted(false)
       setCanvasEmpty(false)
@@ -1068,6 +1093,40 @@ function App() {
       startArchiveGeneration(loadedFont, fontSize)
     } catch {
       setError('Invalid font file. Please upload a valid .otf or .ttf file.')
+    } finally {
+      setFontLoading(false)
+    }
+  }
+
+  const handlePreloadedFontSelect = async (event) => {
+    const selectedName = event.target.value
+    if (!selectedName) return
+
+    const entry = PRELOADED_FONTS.find((f) => f.name === selectedName)
+    if (!entry) return
+
+    setFontLoading(true)
+    setError('')
+    try {
+      const loadedFont = await loadFontFromUrl(entry.url)
+
+      archiveRunRef.current += 1
+      setArchiveData({})
+      setArchiveProgress(0)
+      setArchiveReady(false)
+      setIsGeneratingArchive(false)
+      setExtractedCounterforms([])
+
+      setFont(loadedFont)
+      setFontName(entry.name)
+      setExtracted(false)
+      setCanvasEmpty(false)
+
+      startArchiveGeneration(loadedFont, fontSize)
+    } catch {
+      setError(`Failed to load ${entry.name}. Try uploading a font file instead.`)
+    } finally {
+      setFontLoading(false)
     }
   }
 
@@ -1226,14 +1285,23 @@ function App() {
           >
             ☰
           </button>
-          <button type="button" className="cta-button" onClick={handleExtract} disabled={!font || text.length < 2}>
-            Analyze Volume
-          </button>
-          <button type="button" className="secondary-button" onClick={handleViewOriginal}>
-            View Original
-          </button>
-          <button type="button" className="download-button" onClick={handleDownload} title="Download counterform as SVG">
-            ↓ Download
+          {!extracted && !archiveMode ? (
+            <button type="button" className="cta-button" onClick={handleExtract} disabled={!font || text.length < 2}>
+              Extract Counterforms
+            </button>
+          ) : (
+            <button type="button" className="cta-button" onClick={handleViewOriginal}>
+              ← Back to Glyphs
+            </button>
+          )}
+          <button
+            type="button"
+            className="download-button"
+            onClick={handleDownload}
+            disabled={!extracted && !archiveMode}
+            title="Download counterforms as SVG"
+          >
+            ↓ Download SVG
           </button>
         </div>
       </header>
@@ -1251,8 +1319,24 @@ function App() {
             </button>
             <span className="intro-title">Controforme</span>
             <p>
-              unibz — tool created by Leonardo Voltolini — Prof. Jakob Mayr — April 2026. Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool calculates the total boolean difference of letterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type. Stop reading. Start balancing the void.
+              unibz — tool created by Leonardo Voltolini — Prof. Jakob Mayr — April 2026.
             </p>
+            <p style={{ marginTop: 12 }}>
+              Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool extracts the negative space between letterforms — the counterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type.
+            </p>
+            <div className="intro-steps">
+              <div className="intro-step"><span className="step-num">1</span> Select a font or upload your own</div>
+              <div className="intro-step"><span className="step-num">2</span> Type the letters you want to analyze</div>
+              <div className="intro-step"><span className="step-num">3</span> Click "Extract Counterforms" to reveal the negative space</div>
+              <div className="intro-step"><span className="step-num">4</span> Download the counterforms as SVG files</div>
+            </div>
+            <button
+              type="button"
+              className="cta-button intro-start"
+              onClick={() => setShowIntro(false)}
+            >
+              Start
+            </button>
           </section>
         </div>
       ) : null}
@@ -1260,19 +1344,41 @@ function App() {
       <div className="studio-body">
         <aside className="studio-sidebar">
           <section className="panel panel-soft">
-            <h2>Letter Selection</h2>
+            <h2>1 — Choose a Font</h2>
+
             <label className="field">
-              <span>Load Font</span>
-              <input type="file" accept=".otf,.ttf" onChange={handleFontUpload} />
+              <span>Preset Fonts</span>
+              <select
+                value={fontName}
+                onChange={handlePreloadedFontSelect}
+                disabled={fontLoading}
+              >
+                <option value="">Select a sans-serif…</option>
+                {PRELOADED_FONTS.map((f) => (
+                  <option key={f.name} value={f.name}>{f.name}</option>
+                ))}
+              </select>
             </label>
 
             <label className="field">
-              <span>Select Letters</span>
+              <span>Or Upload Your Own (.otf, .ttf)</span>
+              <input type="file" accept=".otf,.ttf" onChange={handleFontUpload} disabled={fontLoading} />
+            </label>
+
+            {fontLoading ? <p className="status-text">Loading font…</p> : null}
+            {font && !fontLoading ? <p className="status-text font-active">Active: {fontName}</p> : null}
+            {error ? <p className="status-text error">{error}</p> : null}
+          </section>
+
+          <section className="panel panel-soft">
+            <h2>2 — Type Letters</h2>
+            <label className="field">
+              <span>Text</span>
               <input
                 type="text"
                 value={text}
                 onChange={handleTextChange}
-                placeholder="Type letters or words"
+                placeholder="e.g. Hamburg"
               />
             </label>
 
@@ -1286,9 +1392,13 @@ function App() {
                 onChange={handleFontSizeChange}
               />
             </label>
+          </section>
+
+          <section className="panel panel-soft">
+            <h2>3 — Adjust Spacing</h2>
 
             <label className="field range-field">
-              <span>Tracking (Spacing) {tracking.toFixed(0)} px</span>
+              <span>Tracking {tracking.toFixed(0)} px</span>
               <input
                 type="range"
                 min={-80}
@@ -1309,7 +1419,7 @@ function App() {
                 {pairOptions.length === 0 ? <option value={0}>--</option> : null}
                 {pairOptions.map((pair) => (
                   <option key={`${pair.label}-${pair.value}`} value={pair.value}>
-                    {pair.value}: {pair.label}
+                    {pair.label}
                   </option>
                 ))}
               </select>
@@ -1329,49 +1439,45 @@ function App() {
             </label>
           </section>
 
-            <section className="panel panel-soft">
-              <h2>Archive Mode</h2>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={archiveMode}
-                  onChange={(event) => setArchiveMode(event.target.checked)}
-                />
-                Enable Archive Mode
-              </label>
+          <section className="panel panel-soft">
+            <h2>Archive</h2>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={archiveMode}
+                onChange={(event) => setArchiveMode(event.target.checked)}
+              />
+              Generate All Pairs (A–z)
+            </label>
 
-              {archiveMode ? (
-                <>
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={() => setArchiveMode(false)}
-                  >
-                    ← Back to Text View
-                  </button>
+            {archiveMode ? (
+              <>
+                <label className="field compact">
+                  <span>Search Pair</span>
+                  <input
+                    type="text"
+                    maxLength={2}
+                    value={archivePair}
+                    onChange={handleArchivePairChange}
+                    placeholder="e.g. AV"
+                    title="Type exactly two letters to preview that pair"
+                  />
+                </label>
 
-                  <label className="field compact">
-                    <span>Search Pair</span>
-                    <input
-                      type="text"
-                      maxLength={2}
-                      value={archivePair}
-                      onChange={handleArchivePairChange}
-                      placeholder="Search Pair (e.g., PO)"
-                      title="Type exactly two letters to preview that pair"
-                    />
-                  </label>
+                <p className="status-text">
+                  {archivePair.length === 2
+                    ? `Previewing ${archivePair.toUpperCase()}`
+                    : 'Type two letters to preview a pair'}
+                </p>
+              </>
+            ) : null}
+          </section>
 
-                  <p className="status-text">
-                    {archivePair.length === 2
-                      ? `Previewing ${archivePair.toUpperCase()}`
-                      : 'Type two letters to preview a pair'}
-                  </p>
-                </>
-              ) : (
-                <p className="status-text">Archive search is hidden until enabled.</p>
-              )}
-            </section>
+          {!font ? (
+            <p className="hint-text">Select a font above to get started.</p>
+          ) : !extracted && !archiveMode ? (
+            <p className="hint-text">Preview your text on the canvas, then click "Extract Counterforms" in the header.</p>
+          ) : null}
         </aside>
 
         <section className="studio-workspace" ref={workspaceRef} aria-label="Counterform canvas">
@@ -1382,25 +1488,25 @@ function App() {
         </section>
       </div>
 
-        {systemPanelOpen ? (
-          <aside className="system-drawer" aria-label="System panel">
-            <button type="button" onClick={resetView}>
-              Reset View
-            </button>
-            <button type="button" onClick={handleUndo} disabled={!canUndo} title="Cmd/Ctrl + Z">
-              Undo
-            </button>
-            <button type="button" onClick={handleRedo} disabled={!canRedo} title="Cmd/Ctrl + Shift + Z">
-              Redo
-            </button>
-            <button type="button" onClick={handleDownload}>
-              Download SVGs
-            </button>
-            <button type="button" onClick={clearCanvas}>
-              Clear Canvas
-            </button>
-          </aside>
-        ) : null}
+      {systemPanelOpen ? (
+        <aside className="system-drawer" aria-label="System panel">
+          <button type="button" onClick={resetView}>
+            Reset View
+          </button>
+          <button type="button" onClick={handleUndo} disabled={!canUndo} title="Cmd/Ctrl + Z">
+            Undo
+          </button>
+          <button type="button" onClick={handleRedo} disabled={!canRedo} title="Cmd/Ctrl + Shift + Z">
+            Redo
+          </button>
+          <button type="button" onClick={handleDownload}>
+            Download SVGs
+          </button>
+          <button type="button" onClick={clearCanvas}>
+            Clear Canvas
+          </button>
+        </aside>
+      ) : null}
     </main>
   )
 }

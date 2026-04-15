@@ -9,7 +9,90 @@ const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 const CANVAS_WIDTH = 1100
 const CANVAS_HEIGHT = 460
 
+const PRELOADED_FONTS = [
+  { name: 'Inter', url: 'https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-400-normal.ttf' },
+  { name: 'Roboto', url: 'https://cdn.jsdelivr.net/fontsource/fonts/roboto@latest/latin-400-normal.ttf' },
+  { name: 'Open Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/open-sans@latest/latin-400-normal.ttf' },
+  { name: 'Montserrat', url: 'https://cdn.jsdelivr.net/fontsource/fonts/montserrat@latest/latin-400-normal.ttf' },
+  { name: 'Lato', url: 'https://cdn.jsdelivr.net/fontsource/fonts/lato@latest/latin-400-normal.ttf' },
+  { name: 'Poppins', url: 'https://cdn.jsdelivr.net/fontsource/fonts/poppins@latest/latin-400-normal.ttf' },
+  { name: 'DM Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/dm-sans@latest/latin-400-normal.ttf' },
+  { name: 'Work Sans', url: 'https://cdn.jsdelivr.net/fontsource/fonts/work-sans@latest/latin-400-normal.ttf' },
+]
+
+const loadFontFromUrl = async (url) => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error('Failed to fetch font')
+  const buffer = await response.arrayBuffer()
+  return opentype.parse(buffer)
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const LOWERCASE_NO_EXT = new Set('acemnorsuvwxz'.split(''))
+const LOWERCASE_DESCENDERS = new Set('gjpqy'.split(''))
+const LOWERCASE_ASCENDERS = new Set('bdfhklt'.split(''))
+const UPPERCASE = new Set('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''))
+
+const getFontMetrics = (font, fontSize, baselineY) => {
+  const scale = fontSize / font.unitsPerEm
+  const os2 = font.tables?.os2
+  const xHeight = os2?.sxHeight ? os2.sxHeight * scale : null
+  const capHeight = os2?.sCapHeight ? os2.sCapHeight * scale : null
+  const ascender = font.ascender * scale
+  const descender = font.descender * scale
+
+  return {
+    xHeightY: xHeight != null ? baselineY - xHeight : null,
+    capHeightY: capHeight != null ? baselineY - capHeight : null,
+    ascenderY: baselineY - ascender,
+    descenderY: baselineY - descender,
+    baselineY,
+  }
+}
+
+const classifyPairBounds = (leftChar, rightChar, metrics, fallbackTop, fallbackBottom) => {
+  const left = leftChar || ''
+  const right = rightChar || ''
+  const isLeftUpper = UPPERCASE.has(left)
+  const isRightUpper = UPPERCASE.has(right)
+  const isLeftLowerNoExt = LOWERCASE_NO_EXT.has(left)
+  const isRightLowerNoExt = LOWERCASE_NO_EXT.has(right)
+  const isLeftDesc = LOWERCASE_DESCENDERS.has(left)
+  const isRightDesc = LOWERCASE_DESCENDERS.has(right)
+  const isLeftAsc = LOWERCASE_ASCENDERS.has(left)
+  const isRightAsc = LOWERCASE_ASCENDERS.has(right)
+  const isLeftLower = isLeftLowerNoExt || isLeftDesc || isLeftAsc
+  const isRightLower = isRightLowerNoExt || isRightDesc || isRightAsc
+
+  const hasDesc = isLeftDesc || isRightDesc
+  const hasAsc = isLeftAsc || isRightAsc
+  const hasUpper = isLeftUpper || isRightUpper
+  const allLower = isLeftLower && isRightLower
+
+  if (allLower && !hasDesc && !hasAsc) {
+    if (metrics.xHeightY != null) {
+      return { top: metrics.xHeightY, bottom: metrics.baselineY }
+    }
+  }
+
+  if (allLower && (hasDesc || hasAsc)) {
+    return { top: metrics.ascenderY, bottom: metrics.descenderY }
+  }
+
+  if (hasUpper && !hasDesc) {
+    if (metrics.capHeightY != null) {
+      return { top: metrics.capHeightY, bottom: metrics.baselineY }
+    }
+  }
+
+  if (hasUpper && hasDesc) {
+    const top = metrics.capHeightY != null ? metrics.capHeightY : metrics.ascenderY
+    return { top, bottom: metrics.descenderY }
+  }
+
+  return { top: fallbackTop, bottom: fallbackBottom }
+}
 
 const createPaperScope = (canvas) => {
   const scope = new paper.PaperScope()
@@ -57,6 +140,37 @@ const opentypePathToCompoundPath = (scope, openPath) => {
 const buildSvgString = ({ width, height, pathData }) => {
   const safePath = pathData || ''
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n  <path d="${safePath}" fill="black"/>\n</svg>`
+}
+
+const pickCentralIslandPathData = (resultPath, absoluteMid) => {
+  if (!resultPath) {
+    return ''
+  }
+
+  const children = resultPath.children || []
+  if (!children.length) {
+    return resultPath.pathData || ''
+  }
+
+  const best = children.reduce(
+    (closest, child) => {
+      if (!child?.bounds) {
+        return closest
+      }
+
+      const centerX = child.bounds.center.x
+      const distance = Math.abs(centerX - absoluteMid)
+
+      if (distance < closest.distance) {
+        return { child, distance }
+      }
+
+      return closest
+    },
+    { child: null, distance: Number.POSITIVE_INFINITY },
+  )
+
+  return best.child?.pathData || ''
 }
 
 const layoutGlyphs = (
@@ -107,17 +221,31 @@ const computePairCounterform = ({
   rightX,
   baselineY,
   fontSize,
+  font,
+  leftChar,
+  rightChar,
 }) => {
   const leftPath = leftGlyph.getPath(leftX, baselineY, fontSize, { kerning: false })
   const rightPath = rightGlyph.getPath(rightX, baselineY, fontSize, { kerning: false })
   const leftBounds = leftPath.getBoundingBox()
   const rightBounds = rightPath.getBoundingBox()
 
-  const seamBleed = Math.max(0.45, fontSize * 0.002)
-  const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1) - seamBleed
-  const bboxRight = Math.max(leftBounds.x2, rightBounds.x2) + seamBleed
-  const bboxTop = Math.min(leftBounds.y1, rightBounds.y1)
-  const bboxBottom = Math.max(leftBounds.y2, rightBounds.y2)
+  const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1)
+  const bboxRight = Math.max(leftBounds.x2, rightBounds.x2)
+
+  const glyphTop = Math.min(leftBounds.y1, rightBounds.y1)
+  const glyphBottom = Math.max(leftBounds.y2, rightBounds.y2)
+
+  let bboxTop = glyphTop
+  let bboxBottom = glyphBottom
+
+  if (font && leftChar && rightChar) {
+    const metrics = getFontMetrics(font, fontSize, baselineY)
+    const classified = classifyPairBounds(leftChar, rightChar, metrics, glyphTop, glyphBottom)
+    bboxTop = classified.top
+    bboxBottom = classified.bottom
+  }
+
   const bboxWidth = bboxRight - bboxLeft
   const bboxHeight = bboxBottom - bboxTop
 
@@ -125,10 +253,9 @@ const computePairCounterform = ({
     return ''
   }
 
-  const trapRect = new scope.Path.Rectangle({
-    point: [bboxLeft, bboxTop],
-    size: [bboxWidth, bboxHeight],
-  })
+  const trapRect = new scope.Path.Rectangle(
+    new scope.Rectangle(bboxLeft, bboxTop, bboxWidth, bboxHeight),
+  )
 
   const leftShape = opentypePathToCompoundPath(scope, leftPath)
   const rightShape = opentypePathToCompoundPath(scope, rightPath)
@@ -136,60 +263,9 @@ const computePairCounterform = ({
   const finalPath = trapRect.subtract(leftShape).subtract(rightShape)
   finalPath.fillColor = 'black'
   finalPath.strokeWidth = 0
-
-  const leftCenterX = leftBounds.x1 + (leftBounds.x2 - leftBounds.x1) / 2
-  const rightCenterX = rightBounds.x1 + (rightBounds.x2 - rightBounds.x1) / 2
-  const localMaskLeft = Math.min(leftCenterX, rightCenterX) - seamBleed
-  const localMaskRight = Math.max(leftCenterX, rightCenterX) + seamBleed
-
-  const localMask = new scope.Path.Rectangle({
-    point: [localMaskLeft, bboxTop],
-    size: [localMaskRight - localMaskLeft, bboxHeight],
-  })
-
-  const localizedPath = finalPath.intersect(localMask)
-  localizedPath.fillColor = 'black'
-  localizedPath.strokeWidth = 0
-
-  const components = localizedPath.children?.length ? localizedPath.children : [localizedPath]
-  const betweenX = (leftBounds.x2 + rightBounds.x1) / 2
-  const overlapTop = Math.max(leftBounds.y1, rightBounds.y1)
-  const overlapBottom = Math.min(leftBounds.y2, rightBounds.y2)
-  const betweenY = overlapBottom > overlapTop
-    ? (overlapTop + overlapBottom) / 2
-    : (bboxTop + bboxBottom) / 2
-
-  const seedPoint = new scope.Point(
-    clamp(betweenX, bboxLeft + 0.5, bboxRight - 0.5),
-    clamp(betweenY, bboxTop + 0.5, bboxBottom - 0.5),
-  )
-
-  const containingComponents = components.filter((component) => {
-    if (!component || component.removed || typeof component.contains !== 'function') {
-      return false
-    }
-    return component.contains(seedPoint)
-  })
-
-  const selectedComponent = containingComponents.length
-    ? containingComponents.sort((a, b) => {
-        const areaA = Math.max(0, (a.bounds?.width || 0) * (a.bounds?.height || 0))
-        const areaB = Math.max(0, (b.bounds?.width || 0) * (b.bounds?.height || 0))
-        return areaB - areaA
-      })[0]
-    : components
-        .slice()
-        .sort((a, b) => {
-          const areaA = Math.max(0, (a.bounds?.width || 0) * (a.bounds?.height || 0))
-          const areaB = Math.max(0, (b.bounds?.width || 0) * (b.bounds?.height || 0))
-          return areaB - areaA
-        })[0] || null
-
-  const pathData = selectedComponent?.pathData || ''
+  const pathData = pickCentralIslandPathData(finalPath, bboxLeft + bboxWidth / 2)
 
   trapRect.remove()
-  localMask.remove()
-  localizedPath.remove()
   leftShape.remove()
   rightShape.remove()
   finalPath.remove()
@@ -199,7 +275,9 @@ const computePairCounterform = ({
 
 function App() {
   const [font, setFont] = useState(null)
-  const [text, setText] = useState('AV')
+  const [fontName, setFontName] = useState('')
+  const [fontLoading, setFontLoading] = useState(false)
+  const [text, setText] = useState('Hamburg')
   const [fontSize, setFontSize] = useState(260)
   const [tracking, setTracking] = useState(0)
   const [manualKerning, setManualKerning] = useState(0)
@@ -393,64 +471,6 @@ function App() {
     restoreProjectSnapshot(nextSnapshot)
     syncHistoryState()
   }, [captureProjectSnapshot, restoreProjectSnapshot, syncHistoryState])
-
-  const handleUngroupCounterforms = useCallback(() => {
-    const scope = scopeRef.current
-    if (!scope) {
-      return
-    }
-
-    const sourceItems = interactiveItemsRef.current.filter((item) => item && !item.removed)
-    if (!sourceItems.length) {
-      setError('Nothing to ungroup. Analyze first.')
-      return
-    }
-
-    const beforeSnapshot = captureProjectSnapshot()
-    let createdParts = 0
-
-    sourceItems.forEach((item, itemIndex) => {
-      const children = item.children ? [...item.children] : []
-      if (!children.length) {
-        return
-      }
-
-      const baseLabel = item.data?.label || `counterform_${itemIndex}`
-      children.forEach((child, childIndex) => {
-        const childPathData = child.pathData || ''
-        if (!childPathData) {
-          return
-        }
-
-        const part = new scope.CompoundPath({
-          pathData: childPathData,
-          fillColor: 'black',
-          strokeWidth: 0,
-        })
-        part.data.interactive = true
-        part.data.label = `${baseLabel}_part_${childIndex + 1}`
-        createdParts += 1
-      })
-
-      item.remove()
-    })
-
-    if (!createdParts) {
-      setError('No separable parts found.')
-      return
-    }
-
-    interactiveItemsRef.current = scope.project.getItems({
-      match: (item) => Boolean(item?.data?.interactive && !item.removed),
-    })
-    activeItemRef.current = null
-    activeSegmentRef.current = null
-    scope.view.update()
-
-    const afterSnapshot = captureProjectSnapshot()
-    pushHistorySnapshot(beforeSnapshot, afterSnapshot)
-    setError('')
-  }, [captureProjectSnapshot, pushHistorySnapshot])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -787,6 +807,9 @@ function App() {
       rightX: right.x,
       baselineY,
       fontSize,
+      font,
+      leftChar: visibleArchivePair[0],
+      rightChar: visibleArchivePair[1],
     })
 
     setArchiveLivePath(nextArchivePath)
@@ -808,7 +831,10 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyZ') {
+      const tag = document.activeElement?.tagName
+      const isInput = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
+
+      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyZ' && !isInput) {
         event.preventDefault()
         if (event.shiftKey) {
           handleRedo()
@@ -817,14 +843,7 @@ function App() {
         }
         return
       }
-
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyG') {
-        event.preventDefault()
-        handleUngroupCounterforms()
-        return
-      }
-
-      if (event.key === 'Delete' || event.key === 'Backspace') {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !isInput) {
         const scope = scopeRef.current
         const activeItem = activeItemRef.current
         if (scope && activeItem && !activeItem.removed) {
@@ -843,7 +862,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [handleRedo, handleUndo, handleUngroupCounterforms, captureProjectSnapshot, pushHistorySnapshot])
+  }, [handleRedo, handleUndo, captureProjectSnapshot, pushHistorySnapshot])
 
   useEffect(() => {
     const scope = scopeRef.current
@@ -949,6 +968,9 @@ function App() {
         rightX: right.x,
         baselineY: localBaselineY,
         fontSize: nextFontSize,
+        font: nextFont,
+        leftChar: item.char,
+        rightChar: right.char,
       })
 
       return {
@@ -1008,6 +1030,9 @@ function App() {
           rightX,
           baselineY: baseline,
           fontSize: nextFontSize,
+          font: nextFont,
+          leftChar: pair[0],
+          rightChar: pair[1],
         })
 
         generatedChunk[pair] = d
@@ -1047,6 +1072,7 @@ function App() {
       return
     }
 
+    setFontLoading(true)
     try {
       const buffer = await file.arrayBuffer()
       const loadedFont = opentype.parse(buffer)
@@ -1059,6 +1085,7 @@ function App() {
       setExtractedCounterforms([])
 
       setFont(loadedFont)
+      setFontName(file.name.replace(/\.(otf|ttf)$/i, ''))
       setError('')
       setExtracted(false)
       setCanvasEmpty(false)
@@ -1066,11 +1093,45 @@ function App() {
       startArchiveGeneration(loadedFont, fontSize)
     } catch {
       setError('Invalid font file. Please upload a valid .otf or .ttf file.')
+    } finally {
+      setFontLoading(false)
+    }
+  }
+
+  const handlePreloadedFontSelect = async (event) => {
+    const selectedName = event.target.value
+    if (!selectedName) return
+
+    const entry = PRELOADED_FONTS.find((f) => f.name === selectedName)
+    if (!entry) return
+
+    setFontLoading(true)
+    setError('')
+    try {
+      const loadedFont = await loadFontFromUrl(entry.url)
+
+      archiveRunRef.current += 1
+      setArchiveData({})
+      setArchiveProgress(0)
+      setArchiveReady(false)
+      setIsGeneratingArchive(false)
+      setExtractedCounterforms([])
+
+      setFont(loadedFont)
+      setFontName(entry.name)
+      setExtracted(false)
+      setCanvasEmpty(false)
+
+      startArchiveGeneration(loadedFont, fontSize)
+    } catch {
+      setError(`Failed to load ${entry.name}. Try uploading a font file instead.`)
+    } finally {
+      setFontLoading(false)
     }
   }
 
   const handleTextChange = (event) => {
-    const nextText = event.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 2)
+    const nextText = event.target.value
     const boundedPairIndex = clamp(activePairIndex, 0, Math.max(0, nextText.length - 2))
 
     setText(nextText)
@@ -1153,7 +1214,7 @@ function App() {
   }
 
   const handleArchivePairChange = (event) => {
-    const nextArchivePair = event.target.value.replace(/[^A-Za-z]/g, '').slice(0, 2)
+    const nextArchivePair = event.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2)
     setArchivePair(nextArchivePair)
     setCanvasEmpty(false)
   }
@@ -1211,8 +1272,8 @@ function App() {
     <main className="studio-shell">
       <header className="studio-header">
         <div className="header-brand">
-          <h1 className="studio-title">controforme</h1>
-          <p className="studio-subtitle">in case of problems contact Leonardo Voltolini on Teams</p>
+          <h1 className="studio-title">Controforme</h1>
+          <p className="studio-subtitle">counterform analysis tool — unibz</p>
         </div>
         <div className="header-actions">
           <button
@@ -1224,14 +1285,23 @@ function App() {
           >
             ☰
           </button>
-          <button type="button" className="cta-button" onClick={handleExtract} disabled={!font || text.length < 2}>
-            Analyze Volume
-          </button>
-          <button type="button" className="secondary-button" onClick={handleViewOriginal}>
-            View Original
-          </button>
-          <button type="button" className="download-button" onClick={handleDownload} title="Download counterform as SVG">
-            ↓ Download
+          {!extracted && !archiveMode ? (
+            <button type="button" className="cta-button" onClick={handleExtract} disabled={!font || text.length < 2}>
+              Extract Counterforms
+            </button>
+          ) : (
+            <button type="button" className="cta-button" onClick={handleViewOriginal}>
+              ← Back to Glyphs
+            </button>
+          )}
+          <button
+            type="button"
+            className="download-button"
+            onClick={handleDownload}
+            disabled={!extracted && !archiveMode}
+            title="Download counterforms as SVG"
+          >
+            ↓ Download SVG
           </button>
         </div>
       </header>
@@ -1247,9 +1317,26 @@ function App() {
             >
               ×
             </button>
+            <span className="intro-title">Controforme</span>
             <p>
-              Spatial Volume Laboratory (unibz / tool created by Leonardo Voltolini / Prof. Jakob Mayr / April 2026). Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool calculates the total boolean difference of letterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type. Stop reading. Start balancing the void.
+              unibz — tool created by Leonardo Voltolini — Prof. Jakob Mayr — April 2026.
             </p>
+            <p style={{ marginTop: 12 }}>
+              Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool extracts the negative space between letterforms — the counterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type.
+            </p>
+            <div className="intro-steps">
+              <div className="intro-step"><span className="step-num">1</span> Select a font or upload your own</div>
+              <div className="intro-step"><span className="step-num">2</span> Type the letters you want to analyze</div>
+              <div className="intro-step"><span className="step-num">3</span> Click "Extract Counterforms" to reveal the negative space</div>
+              <div className="intro-step"><span className="step-num">4</span> Download the counterforms as SVG files</div>
+            </div>
+            <button
+              type="button"
+              className="cta-button intro-start"
+              onClick={() => setShowIntro(false)}
+            >
+              Start
+            </button>
           </section>
         </div>
       ) : null}
@@ -1257,20 +1344,41 @@ function App() {
       <div className="studio-body">
         <aside className="studio-sidebar">
           <section className="panel panel-soft">
-            <h2>Letter Selection</h2>
+            <h2>1 — Choose a Font</h2>
+
             <label className="field">
-              <span>Load Font</span>
-              <input type="file" accept=".otf,.ttf" onChange={handleFontUpload} />
+              <span>Preset Fonts</span>
+              <select
+                value={fontName}
+                onChange={handlePreloadedFontSelect}
+                disabled={fontLoading}
+              >
+                <option value="">Select a sans-serif…</option>
+                {PRELOADED_FONTS.map((f) => (
+                  <option key={f.name} value={f.name}>{f.name}</option>
+                ))}
+              </select>
             </label>
 
             <label className="field">
-              <span>Select Letters</span>
+              <span>Or Upload Your Own (.otf, .ttf)</span>
+              <input type="file" accept=".otf,.ttf" onChange={handleFontUpload} disabled={fontLoading} />
+            </label>
+
+            {fontLoading ? <p className="status-text">Loading font…</p> : null}
+            {font && !fontLoading ? <p className="status-text font-active">Active: {fontName}</p> : null}
+            {error ? <p className="status-text error">{error}</p> : null}
+          </section>
+
+          <section className="panel panel-soft">
+            <h2>2 — Type Letters</h2>
+            <label className="field">
+              <span>Text</span>
               <input
                 type="text"
-                maxLength={2}
                 value={text}
                 onChange={handleTextChange}
-                placeholder="Type 2 letters or numbers"
+                placeholder="e.g. Hamburg"
               />
             </label>
 
@@ -1284,9 +1392,13 @@ function App() {
                 onChange={handleFontSizeChange}
               />
             </label>
+          </section>
+
+          <section className="panel panel-soft">
+            <h2>3 — Adjust Spacing</h2>
 
             <label className="field range-field">
-              <span>Tracking (Spacing) {tracking.toFixed(0)} px</span>
+              <span>Tracking {tracking.toFixed(0)} px</span>
               <input
                 type="range"
                 min={-80}
@@ -1307,7 +1419,7 @@ function App() {
                 {pairOptions.length === 0 ? <option value={0}>--</option> : null}
                 {pairOptions.map((pair) => (
                   <option key={`${pair.label}-${pair.value}`} value={pair.value}>
-                    {pair.value}: {pair.label}
+                    {pair.label}
                   </option>
                 ))}
               </select>
@@ -1327,49 +1439,45 @@ function App() {
             </label>
           </section>
 
-            <section className="panel panel-soft">
-              <h2>Archive Mode</h2>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={archiveMode}
-                  onChange={(event) => setArchiveMode(event.target.checked)}
-                />
-                Enable Archive Mode
-              </label>
+          <section className="panel panel-soft">
+            <h2>Archive</h2>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={archiveMode}
+                onChange={(event) => setArchiveMode(event.target.checked)}
+              />
+              Generate All Pairs (A–z)
+            </label>
 
-              {archiveMode ? (
-                <>
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={() => setArchiveMode(false)}
-                  >
-                    ← Back to Text View
-                  </button>
+            {archiveMode ? (
+              <>
+                <label className="field compact">
+                  <span>Search Pair</span>
+                  <input
+                    type="text"
+                    maxLength={2}
+                    value={archivePair}
+                    onChange={handleArchivePairChange}
+                    placeholder="e.g. AV"
+                    title="Type exactly two letters to preview that pair"
+                  />
+                </label>
 
-                  <label className="field compact">
-                    <span>Search Pair</span>
-                    <input
-                      type="text"
-                      maxLength={2}
-                      value={archivePair}
-                      onChange={handleArchivePairChange}
-                      placeholder="Search Pair (e.g., PO)"
-                      title="Type exactly two letters to preview that pair"
-                    />
-                  </label>
+                <p className="status-text">
+                  {archivePair.length === 2
+                    ? `Previewing ${archivePair.toUpperCase()}`
+                    : 'Type two letters to preview a pair'}
+                </p>
+              </>
+            ) : null}
+          </section>
 
-                  <p className="status-text">
-                    {archivePair.length === 2
-                      ? `Previewing ${archivePair.toUpperCase()}`
-                      : 'Type two letters to preview a pair'}
-                  </p>
-                </>
-              ) : (
-                <p className="status-text">Archive search is hidden until enabled.</p>
-              )}
-            </section>
+          {!font ? (
+            <p className="hint-text">Select a font above to get started.</p>
+          ) : !extracted && !archiveMode ? (
+            <p className="hint-text">Preview your text on the canvas, then click "Extract Counterforms" in the header.</p>
+          ) : null}
         </aside>
 
         <section className="studio-workspace" ref={workspaceRef} aria-label="Counterform canvas">
@@ -1380,28 +1488,25 @@ function App() {
         </section>
       </div>
 
-        {systemPanelOpen ? (
-          <aside className="system-drawer" aria-label="System panel">
-            <button type="button" onClick={resetView}>
-              Reset View
-            </button>
-            <button type="button" onClick={handleUndo} disabled={!canUndo} title="Cmd/Ctrl + Z">
-              Undo
-            </button>
-            <button type="button" onClick={handleRedo} disabled={!canRedo} title="Cmd/Ctrl + Shift + Z">
-              Redo
-            </button>
-            <button type="button" onClick={handleUngroupCounterforms} title="Cmd/Ctrl + Shift + G">
-              Ungroup Parts
-            </button>
-            <button type="button" onClick={handleDownload}>
-              Download SVGs
-            </button>
-            <button type="button" onClick={clearCanvas}>
-              Clear Canvas
-            </button>
-          </aside>
-        ) : null}
+      {systemPanelOpen ? (
+        <aside className="system-drawer" aria-label="System panel">
+          <button type="button" onClick={resetView}>
+            Reset View
+          </button>
+          <button type="button" onClick={handleUndo} disabled={!canUndo} title="Cmd/Ctrl + Z">
+            Undo
+          </button>
+          <button type="button" onClick={handleRedo} disabled={!canRedo} title="Cmd/Ctrl + Shift + Z">
+            Redo
+          </button>
+          <button type="button" onClick={handleDownload}>
+            Download SVGs
+          </button>
+          <button type="button" onClick={clearCanvas}>
+            Clear Canvas
+          </button>
+        </aside>
+      ) : null}
     </main>
   )
 }
