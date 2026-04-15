@@ -11,6 +11,71 @@ const CANVAS_HEIGHT = 460
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
+const LOWERCASE_NO_EXT = new Set('acemnorsuvwxz'.split(''))
+const LOWERCASE_DESCENDERS = new Set('gjpqy'.split(''))
+const LOWERCASE_ASCENDERS = new Set('bdfhklt'.split(''))
+const UPPERCASE = new Set('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''))
+
+const getFontMetrics = (font, fontSize, baselineY) => {
+  const scale = fontSize / font.unitsPerEm
+  const os2 = font.tables?.os2
+  const xHeight = os2?.sxHeight ? os2.sxHeight * scale : null
+  const capHeight = os2?.sCapHeight ? os2.sCapHeight * scale : null
+  const ascender = font.ascender * scale
+  const descender = font.descender * scale
+
+  return {
+    xHeightY: xHeight != null ? baselineY - xHeight : null,
+    capHeightY: capHeight != null ? baselineY - capHeight : null,
+    ascenderY: baselineY - ascender,
+    descenderY: baselineY - descender,
+    baselineY,
+  }
+}
+
+const classifyPairBounds = (leftChar, rightChar, metrics, fallbackTop, fallbackBottom) => {
+  const left = leftChar || ''
+  const right = rightChar || ''
+  const isLeftUpper = UPPERCASE.has(left)
+  const isRightUpper = UPPERCASE.has(right)
+  const isLeftLowerNoExt = LOWERCASE_NO_EXT.has(left)
+  const isRightLowerNoExt = LOWERCASE_NO_EXT.has(right)
+  const isLeftDesc = LOWERCASE_DESCENDERS.has(left)
+  const isRightDesc = LOWERCASE_DESCENDERS.has(right)
+  const isLeftAsc = LOWERCASE_ASCENDERS.has(left)
+  const isRightAsc = LOWERCASE_ASCENDERS.has(right)
+  const isLeftLower = isLeftLowerNoExt || isLeftDesc || isLeftAsc
+  const isRightLower = isRightLowerNoExt || isRightDesc || isRightAsc
+
+  const hasDesc = isLeftDesc || isRightDesc
+  const hasAsc = isLeftAsc || isRightAsc
+  const hasUpper = isLeftUpper || isRightUpper
+  const allLower = isLeftLower && isRightLower
+
+  if (allLower && !hasDesc && !hasAsc) {
+    if (metrics.xHeightY != null) {
+      return { top: metrics.xHeightY, bottom: metrics.baselineY }
+    }
+  }
+
+  if (allLower && (hasDesc || hasAsc)) {
+    return { top: metrics.ascenderY, bottom: metrics.descenderY }
+  }
+
+  if (hasUpper && !hasDesc) {
+    if (metrics.capHeightY != null) {
+      return { top: metrics.capHeightY, bottom: metrics.baselineY }
+    }
+  }
+
+  if (hasUpper && hasDesc) {
+    const top = metrics.capHeightY != null ? metrics.capHeightY : metrics.ascenderY
+    return { top, bottom: metrics.descenderY }
+  }
+
+  return { top: fallbackTop, bottom: fallbackBottom }
+}
+
 const createPaperScope = (canvas) => {
   const scope = new paper.PaperScope()
   scope.setup(canvas)
@@ -138,6 +203,9 @@ const computePairCounterform = ({
   rightX,
   baselineY,
   fontSize,
+  font,
+  leftChar,
+  rightChar,
 }) => {
   const leftPath = leftGlyph.getPath(leftX, baselineY, fontSize, { kerning: false })
   const rightPath = rightGlyph.getPath(rightX, baselineY, fontSize, { kerning: false })
@@ -145,9 +213,21 @@ const computePairCounterform = ({
   const rightBounds = rightPath.getBoundingBox()
 
   const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1)
-  const bboxTop = Math.min(leftBounds.y1, rightBounds.y1)
   const bboxRight = Math.max(leftBounds.x2, rightBounds.x2)
-  const bboxBottom = Math.max(leftBounds.y2, rightBounds.y2)
+
+  const glyphTop = Math.min(leftBounds.y1, rightBounds.y1)
+  const glyphBottom = Math.max(leftBounds.y2, rightBounds.y2)
+
+  let bboxTop = glyphTop
+  let bboxBottom = glyphBottom
+
+  if (font && leftChar && rightChar) {
+    const metrics = getFontMetrics(font, fontSize, baselineY)
+    const classified = classifyPairBounds(leftChar, rightChar, metrics, glyphTop, glyphBottom)
+    bboxTop = classified.top
+    bboxBottom = classified.bottom
+  }
+
   const bboxWidth = bboxRight - bboxLeft
   const bboxHeight = bboxBottom - bboxTop
 
@@ -707,6 +787,9 @@ function App() {
       rightX: right.x,
       baselineY,
       fontSize,
+      font,
+      leftChar: visibleArchivePair[0],
+      rightChar: visibleArchivePair[1],
     })
 
     setArchiveLivePath(nextArchivePath)
@@ -862,6 +945,9 @@ function App() {
         rightX: right.x,
         baselineY: localBaselineY,
         fontSize: nextFontSize,
+        font: nextFont,
+        leftChar: item.char,
+        rightChar: right.char,
       })
 
       return {
@@ -921,6 +1007,9 @@ function App() {
           rightX,
           baselineY: baseline,
           fontSize: nextFontSize,
+          font: nextFont,
+          leftChar: pair[0],
+          rightChar: pair[1],
         })
 
         generatedChunk[pair] = d
@@ -1124,8 +1213,8 @@ function App() {
     <main className="studio-shell">
       <header className="studio-header">
         <div className="header-brand">
-          <h1 className="studio-title">Spatial Volume Laboratory</h1>
-          <p className="studio-subtitle">in case of problems contact Leonardo Voltolini on Teams</p>
+          <h1 className="studio-title">Controforme</h1>
+          <p className="studio-subtitle">counterform analysis tool — unibz</p>
         </div>
         <div className="header-actions">
           <button
@@ -1160,8 +1249,9 @@ function App() {
             >
               ×
             </button>
+            <span className="intro-title">Controforme</span>
             <p>
-              Spatial Volume Laboratory (unibz / tool created by Leonardo Voltolini / Prof. Jakob Mayr / April 2026). Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool calculates the total boolean difference of letterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type. Stop reading. Start balancing the void.
+              unibz — tool created by Leonardo Voltolini — Prof. Jakob Mayr — April 2026. Typography is the architecture of space, not just ink. Following Willi Kunz's micro-aesthetics, this tool calculates the total boolean difference of letterforms. By turning the void into solid black mass, it exposes the true structural rhythm of your type. Stop reading. Start balancing the void.
             </p>
           </section>
         </div>
