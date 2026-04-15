@@ -142,37 +142,6 @@ const buildSvgString = ({ width, height, pathData }) => {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n  <path d="${safePath}" fill="black"/>\n</svg>`
 }
 
-const pickCentralIslandPathData = (resultPath, absoluteMid) => {
-  if (!resultPath) {
-    return ''
-  }
-
-  const children = resultPath.children || []
-  if (!children.length) {
-    return resultPath.pathData || ''
-  }
-
-  const best = children.reduce(
-    (closest, child) => {
-      if (!child?.bounds) {
-        return closest
-      }
-
-      const centerX = child.bounds.center.x
-      const distance = Math.abs(centerX - absoluteMid)
-
-      if (distance < closest.distance) {
-        return { child, distance }
-      }
-
-      return closest
-    },
-    { child: null, distance: Number.POSITIVE_INFINITY },
-  )
-
-  return best.child?.pathData || ''
-}
-
 const layoutGlyphs = (
   font,
   text,
@@ -224,6 +193,8 @@ const computePairCounterform = ({
   font,
   leftChar,
   rightChar,
+  clipToGap = true,
+  clipPadding = 0,
 }) => {
   const leftPath = leftGlyph.getPath(leftX, baselineY, fontSize, { kerning: false })
   const rightPath = rightGlyph.getPath(rightX, baselineY, fontSize, { kerning: false })
@@ -260,15 +231,34 @@ const computePairCounterform = ({
   const leftShape = opentypePathToCompoundPath(scope, leftPath)
   const rightShape = opentypePathToCompoundPath(scope, rightPath)
 
-  const finalPath = trapRect.subtract(leftShape).subtract(rightShape)
-  finalPath.fillColor = 'black'
-  finalPath.strokeWidth = 0
-  const pathData = pickCentralIslandPathData(finalPath, bboxLeft + bboxWidth / 2)
+  const fullResult = trapRect.subtract(leftShape).subtract(rightShape)
+  fullResult.fillColor = 'black'
+  fullResult.strokeWidth = 0
+
+  let pathData = ''
+
+  if (clipToGap) {
+    const gapLeft = leftBounds.x2 - clipPadding
+    const gapRight = rightBounds.x1 + clipPadding
+    const maskLeft = Math.min(gapLeft, gapRight)
+    const maskRight = Math.max(gapLeft, gapRight)
+    const maskWidth = Math.max(maskRight - maskLeft, 1)
+
+    const clipRect = new scope.Path.Rectangle(
+      new scope.Rectangle(maskLeft, bboxTop, maskWidth, bboxHeight),
+    )
+    const clipped = fullResult.intersect(clipRect)
+    pathData = clipped.pathData || ''
+    clipRect.remove()
+    clipped.remove()
+  } else {
+    pathData = fullResult.pathData || ''
+  }
 
   trapRect.remove()
   leftShape.remove()
   rightShape.remove()
-  finalPath.remove()
+  fullResult.remove()
 
   return pathData
 }
@@ -298,6 +288,8 @@ function App() {
   const [systemPanelOpen, setSystemPanelOpen] = useState(false)
   const [canvasEmpty, setCanvasEmpty] = useState(false)
   const [showIntro, setShowIntro] = useState(true)
+  const [clipToGap, setClipToGap] = useState(true)
+  const [clipPadding, setClipPadding] = useState(0)
 
   const canvasRef = useRef(null)
   const workspaceRef = useRef(null)
@@ -551,7 +543,7 @@ function App() {
         if (!currentItem?.removed) {
           const isTarget = currentItem === item
           currentItem.selected = isTarget
-          currentItem.fullySelected = isTarget
+          currentItem.fullySelected = false
         }
       })
       activeItemRef.current = item
@@ -810,10 +802,12 @@ function App() {
       font,
       leftChar: visibleArchivePair[0],
       rightChar: visibleArchivePair[1],
+      clipToGap,
+      clipPadding,
     })
 
     setArchiveLivePath(nextArchivePath)
-  }, [archiveMode, baselineY, font, fontSize, manualKerning, tracking, visibleArchivePair, viewportSize.width])
+  }, [archiveMode, baselineY, clipToGap, clipPadding, font, fontSize, manualKerning, tracking, visibleArchivePair, viewportSize.width])
 
   const visibleCounterforms = useMemo(() => {
     if (archiveMode) {
@@ -937,6 +931,8 @@ function App() {
     nextTracking = tracking,
     nextManualKerning = manualKerning,
     nextActivePairIndex = activePairIndex,
+    nextClipToGap = clipToGap,
+    nextClipPadding = clipPadding,
   } = {}) => {
     const scope = scopeRef.current
     if (!scope || !nextFont || nextText.length < 2) {
@@ -971,6 +967,8 @@ function App() {
         font: nextFont,
         leftChar: item.char,
         rightChar: right.char,
+        clipToGap: nextClipToGap,
+        clipPadding: nextClipPadding,
       })
 
       return {
@@ -1033,6 +1031,8 @@ function App() {
           font: nextFont,
           leftChar: pair[0],
           rightChar: pair[1],
+          clipToGap: true,
+          clipPadding: 0,
         })
 
         generatedChunk[pair] = d
@@ -1398,7 +1398,7 @@ function App() {
             <h2>3 — Adjust Spacing</h2>
 
             <label className="field range-field">
-              <span>Tracking {tracking.toFixed(0)} px</span>
+              <span>Tracking (all pairs) {tracking.toFixed(0)} px</span>
               <input
                 type="range"
                 min={-80}
@@ -1426,7 +1426,7 @@ function App() {
             </label>
 
             <label className="field range-field">
-              <span>Manual Kerning {manualKerning.toFixed(0)} px</span>
+              <span>Pair Kerning (active only) {manualKerning.toFixed(0)} px</span>
               <input
                 type="range"
                 min={-220}
@@ -1435,6 +1435,40 @@ function App() {
                 value={manualKerning}
                 onChange={handleManualKerningChange}
                 disabled={!archiveMode && pairOptions.length === 0}
+              />
+            </label>
+          </section>
+
+          <section className="panel panel-soft">
+            <h2>4 — Crop</h2>
+
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={clipToGap}
+                onChange={(event) => {
+                  const next = event.target.checked
+                  setClipToGap(next)
+                  if (extracted) recomputeExtractedCounterforms({ nextClipToGap: next })
+                }}
+              />
+              Crop to gap between letters
+            </label>
+
+            <label className="field range-field">
+              <span>Crop Padding {clipPadding.toFixed(0)} px</span>
+              <input
+                type="range"
+                min={0}
+                max={120}
+                step={1}
+                value={clipPadding}
+                onChange={(event) => {
+                  const next = Number(event.target.value)
+                  setClipPadding(next)
+                  if (extracted) recomputeExtractedCounterforms({ nextClipPadding: next })
+                }}
+                disabled={!clipToGap}
               />
             </label>
           </section>
