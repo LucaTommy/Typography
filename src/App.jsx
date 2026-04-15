@@ -59,37 +59,6 @@ const buildSvgString = ({ width, height, pathData }) => {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n  <path d="${safePath}" fill="black"/>\n</svg>`
 }
 
-const pickCentralIslandPathData = (resultPath, absoluteMid) => {
-  if (!resultPath) {
-    return ''
-  }
-
-  const children = resultPath.children || []
-  if (!children.length) {
-    return resultPath.pathData || ''
-  }
-
-  const best = children.reduce(
-    (closest, child) => {
-      if (!child?.bounds) {
-        return closest
-      }
-
-      const centerX = child.bounds.center.x
-      const distance = Math.abs(centerX - absoluteMid)
-
-      if (distance < closest.distance) {
-        return { child, distance }
-      }
-
-      return closest
-    },
-    { child: null, distance: Number.POSITIVE_INFINITY },
-  )
-
-  return best.child?.pathData || ''
-}
-
 const layoutGlyphs = (
   font,
   text,
@@ -130,70 +99,8 @@ const layoutGlyphs = (
   return { glyphs: positioned, width: cursorX }
 }
 
-const getScaledFontMetrics = (font, fontSize) => {
-  const unitsPerEm = font?.unitsPerEm || 1000
-  const fontScale = fontSize / unitsPerEm
-  const os2 = font?.tables?.os2 || {}
-  const hhea = font?.tables?.hhea || {}
-
-  const ascenderUnits = Number.isFinite(font?.ascender)
-    ? font.ascender
-    : Number.isFinite(hhea.ascender)
-      ? hhea.ascender
-      : unitsPerEm * 0.8
-
-  const rawDescenderUnits = Number.isFinite(font?.descender)
-    ? font.descender
-    : Number.isFinite(hhea.descender)
-      ? hhea.descender
-      : -unitsPerEm * 0.2
-
-  const xHeightUnits = Number.isFinite(os2.sxHeight) && os2.sxHeight > 0
-    ? os2.sxHeight
-    : ascenderUnits * 0.5
-
-  const capHeightUnits = Number.isFinite(os2.sCapHeight) && os2.sCapHeight > 0
-    ? os2.sCapHeight
-    : ascenderUnits * 0.8
-
-  const scaledAscender = ascenderUnits * fontScale
-  const scaledDescenderRaw = rawDescenderUnits * fontScale
-  const scaledDescender = scaledDescenderRaw > 0 ? -scaledDescenderRaw : scaledDescenderRaw
-  const scaledXHeight = xHeightUnits * fontScale
-  const scaledCapHeight = capHeightUnits * fontScale
-
-  return {
-    ascender: scaledAscender,
-    descender: scaledDescender,
-    xHeight: scaledXHeight,
-    capHeight: scaledCapHeight,
-  }
-}
-
-const getMetricMaskVerticalRange = ({ sourceText, baselineY, metrics }) => {
-  const sample = sourceText || ''
-  const hasDescenders = /[gjpqy]/.test(sample)
-  const hasCapsOrNums = /[A-Z0-9]/.test(sample)
-  const hasAscenders = /[bdfhklt]/.test(sample)
-
-  const topY = hasCapsOrNums
-    ? baselineY - metrics.capHeight
-    : hasAscenders
-      ? baselineY - metrics.ascender
-      : baselineY - metrics.xHeight
-
-  const bottomY = hasDescenders ? baselineY - metrics.descender : baselineY
-
-  return {
-    topY,
-    bottomY: Math.max(bottomY, topY + 1),
-  }
-}
-
 const computePairCounterform = ({
   scope,
-  font,
-  pairText,
   leftGlyph,
   rightGlyph,
   leftX,
@@ -206,14 +113,11 @@ const computePairCounterform = ({
   const leftBounds = leftPath.getBoundingBox()
   const rightBounds = rightPath.getBoundingBox()
 
-  const bboxLeft = leftBounds.x1 + (leftBounds.x2 - leftBounds.x1) / 2
-  const bboxRight = rightBounds.x1 + (rightBounds.x2 - rightBounds.x1) / 2
-  const metrics = getScaledFontMetrics(font, fontSize)
-  const { topY: bboxTop, bottomY: bboxBottom } = getMetricMaskVerticalRange({
-    sourceText: pairText,
-    baselineY,
-    metrics,
-  })
+  const seamBleed = Math.max(0.45, fontSize * 0.002)
+  const bboxLeft = Math.min(leftBounds.x1, rightBounds.x1) - seamBleed
+  const bboxRight = Math.max(leftBounds.x2, rightBounds.x2) + seamBleed
+  const bboxTop = Math.min(leftBounds.y1, rightBounds.y1)
+  const bboxBottom = Math.max(leftBounds.y2, rightBounds.y2)
   const bboxWidth = bboxRight - bboxLeft
   const bboxHeight = bboxBottom - bboxTop
 
@@ -232,9 +136,60 @@ const computePairCounterform = ({
   const finalPath = trapRect.subtract(leftShape).subtract(rightShape)
   finalPath.fillColor = 'black'
   finalPath.strokeWidth = 0
-  const pathData = pickCentralIslandPathData(finalPath, bboxLeft + bboxWidth / 2)
+
+  const leftCenterX = leftBounds.x1 + (leftBounds.x2 - leftBounds.x1) / 2
+  const rightCenterX = rightBounds.x1 + (rightBounds.x2 - rightBounds.x1) / 2
+  const localMaskLeft = Math.min(leftCenterX, rightCenterX) - seamBleed
+  const localMaskRight = Math.max(leftCenterX, rightCenterX) + seamBleed
+
+  const localMask = new scope.Path.Rectangle({
+    point: [localMaskLeft, bboxTop],
+    size: [localMaskRight - localMaskLeft, bboxHeight],
+  })
+
+  const localizedPath = finalPath.intersect(localMask)
+  localizedPath.fillColor = 'black'
+  localizedPath.strokeWidth = 0
+
+  const components = localizedPath.children?.length ? localizedPath.children : [localizedPath]
+  const betweenX = (leftBounds.x2 + rightBounds.x1) / 2
+  const overlapTop = Math.max(leftBounds.y1, rightBounds.y1)
+  const overlapBottom = Math.min(leftBounds.y2, rightBounds.y2)
+  const betweenY = overlapBottom > overlapTop
+    ? (overlapTop + overlapBottom) / 2
+    : (bboxTop + bboxBottom) / 2
+
+  const seedPoint = new scope.Point(
+    clamp(betweenX, bboxLeft + 0.5, bboxRight - 0.5),
+    clamp(betweenY, bboxTop + 0.5, bboxBottom - 0.5),
+  )
+
+  const containingComponents = components.filter((component) => {
+    if (!component || component.removed || typeof component.contains !== 'function') {
+      return false
+    }
+    return component.contains(seedPoint)
+  })
+
+  const selectedComponent = containingComponents.length
+    ? containingComponents.sort((a, b) => {
+        const areaA = Math.max(0, (a.bounds?.width || 0) * (a.bounds?.height || 0))
+        const areaB = Math.max(0, (b.bounds?.width || 0) * (b.bounds?.height || 0))
+        return areaB - areaA
+      })[0]
+    : components
+        .slice()
+        .sort((a, b) => {
+          const areaA = Math.max(0, (a.bounds?.width || 0) * (a.bounds?.height || 0))
+          const areaB = Math.max(0, (b.bounds?.width || 0) * (b.bounds?.height || 0))
+          return areaB - areaA
+        })[0] || null
+
+  const pathData = selectedComponent?.pathData || ''
 
   trapRect.remove()
+  localMask.remove()
+  localizedPath.remove()
   leftShape.remove()
   rightShape.remove()
   finalPath.remove()
@@ -244,7 +199,7 @@ const computePairCounterform = ({
 
 function App() {
   const [font, setFont] = useState(null)
-  const [text, setText] = useState('28000')
+  const [text, setText] = useState('AV')
   const [fontSize, setFontSize] = useState(260)
   const [tracking, setTracking] = useState(0)
   const [manualKerning, setManualKerning] = useState(0)
@@ -438,6 +393,64 @@ function App() {
     restoreProjectSnapshot(nextSnapshot)
     syncHistoryState()
   }, [captureProjectSnapshot, restoreProjectSnapshot, syncHistoryState])
+
+  const handleUngroupCounterforms = useCallback(() => {
+    const scope = scopeRef.current
+    if (!scope) {
+      return
+    }
+
+    const sourceItems = interactiveItemsRef.current.filter((item) => item && !item.removed)
+    if (!sourceItems.length) {
+      setError('Nothing to ungroup. Analyze first.')
+      return
+    }
+
+    const beforeSnapshot = captureProjectSnapshot()
+    let createdParts = 0
+
+    sourceItems.forEach((item, itemIndex) => {
+      const children = item.children ? [...item.children] : []
+      if (!children.length) {
+        return
+      }
+
+      const baseLabel = item.data?.label || `counterform_${itemIndex}`
+      children.forEach((child, childIndex) => {
+        const childPathData = child.pathData || ''
+        if (!childPathData) {
+          return
+        }
+
+        const part = new scope.CompoundPath({
+          pathData: childPathData,
+          fillColor: 'black',
+          strokeWidth: 0,
+        })
+        part.data.interactive = true
+        part.data.label = `${baseLabel}_part_${childIndex + 1}`
+        createdParts += 1
+      })
+
+      item.remove()
+    })
+
+    if (!createdParts) {
+      setError('No separable parts found.')
+      return
+    }
+
+    interactiveItemsRef.current = scope.project.getItems({
+      match: (item) => Boolean(item?.data?.interactive && !item.removed),
+    })
+    activeItemRef.current = null
+    activeSegmentRef.current = null
+    scope.view.update()
+
+    const afterSnapshot = captureProjectSnapshot()
+    pushHistorySnapshot(beforeSnapshot, afterSnapshot)
+    setError('')
+  }, [captureProjectSnapshot, pushHistorySnapshot])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -768,8 +781,6 @@ function App() {
     const right = archiveLayout.glyphs[1]
     const nextArchivePath = computePairCounterform({
       scope,
-      font,
-      pairText: visibleArchivePair,
       leftGlyph: left.glyph,
       rightGlyph: right.glyph,
       leftX: left.x,
@@ -806,6 +817,13 @@ function App() {
         }
         return
       }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyG') {
+        event.preventDefault()
+        handleUngroupCounterforms()
+        return
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         const scope = scopeRef.current
         const activeItem = activeItemRef.current
@@ -825,7 +843,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [handleRedo, handleUndo, captureProjectSnapshot, pushHistorySnapshot])
+  }, [handleRedo, handleUndo, handleUngroupCounterforms, captureProjectSnapshot, pushHistorySnapshot])
 
   useEffect(() => {
     const scope = scopeRef.current
@@ -925,8 +943,6 @@ function App() {
       const right = localLayout.glyphs[index + 1]
       const pathData = computePairCounterform({
         scope,
-        font: nextFont,
-        pairText: `${item.char}${right.char}`,
         leftGlyph: item.glyph,
         rightGlyph: right.glyph,
         leftX: item.x,
@@ -986,8 +1002,6 @@ function App() {
 
         const d = computePairCounterform({
           scope,
-          font: nextFont,
-          pairText: pair,
           leftGlyph,
           rightGlyph,
           leftX: 200,
@@ -1056,7 +1070,7 @@ function App() {
   }
 
   const handleTextChange = (event) => {
-    const nextText = event.target.value
+    const nextText = event.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 2)
     const boundedPairIndex = clamp(activePairIndex, 0, Math.max(0, nextText.length - 2))
 
     setText(nextText)
@@ -1139,7 +1153,7 @@ function App() {
   }
 
   const handleArchivePairChange = (event) => {
-    const nextArchivePair = event.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2)
+    const nextArchivePair = event.target.value.replace(/[^A-Za-z]/g, '').slice(0, 2)
     setArchivePair(nextArchivePair)
     setCanvasEmpty(false)
   }
@@ -1253,9 +1267,10 @@ function App() {
               <span>Select Letters</span>
               <input
                 type="text"
+                maxLength={2}
                 value={text}
                 onChange={handleTextChange}
-                placeholder="Type letters or words"
+                placeholder="Type 2 letters or numbers"
               />
             </label>
 
@@ -1375,6 +1390,9 @@ function App() {
             </button>
             <button type="button" onClick={handleRedo} disabled={!canRedo} title="Cmd/Ctrl + Shift + Z">
               Redo
+            </button>
+            <button type="button" onClick={handleUngroupCounterforms} title="Cmd/Ctrl + Shift + G">
+              Ungroup Parts
             </button>
             <button type="button" onClick={handleDownload}>
               Download SVGs
